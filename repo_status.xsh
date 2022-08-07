@@ -8,14 +8,21 @@ from rich import box
 from rich.align import Align
 from rich.console import Console
 from rich.live import Live
-from rich.table import Table
+from rich.tree import Tree
 from rich.text import Text
 
 from xonsh.dirstack import with_pushd
 
 
+OK_BRANCHES = {'main', 'master', 'develop'}
+
 parser = argparse.ArgumentParser(description='Status of a tree of repos.')
-parser.add_argument("--fetch", help="fetch all remotes", default=False, action=argparse.BooleanOptionalAction)
+parser.add_argument(
+    "--fetch",
+    help="fetch all remotes",
+    default=False,
+    action=argparse.BooleanOptionalAction
+)
 parser.add_argument("--depth", help="depth", type=int, default=1)
 args = parser.parse_args()
 
@@ -68,31 +75,36 @@ def parse_status(status):
     }
 
 console = Console()
-table = Table(show_footer=False)
-table_centered = Align.center(table)
-table.add_column("org")
-table.add_column("repo")
-table.add_column("branch")
-table.add_column("status")
-table.add_column("dirty")
-# console.clear()
+tree = Tree("Repos")
+
 
 def format_branch(branch):
-    if branch in {'main', 'master', 'develop', 'gh-pages'}:
+    if branch in OK_BRANCHES:
         color = 'green'
     else:
         color = 'red'
-    return f'[{color}]{branch}[/{color}]'
+    return f'[{color}]{_trim_name(branch)}[/{color}]'
 
-def _format_dir(count, prefix):
+def _format_dir(count, prefix, postfix=' ', format_number=lambda x: x):
     if count == 0:
         color = 'green'
     else:
         color = 'red'
-    return f'[{color}]{prefix}{count} [/{color}]'
+    count = format_number(count)
+    return f'[{color}]{prefix}{count}{postfix}[/{color}]'
 
 def format_aheadbehind(ahead, behind):
-    return f'{_format_dir(ahead, "↑")} {_format_dir(behind, "↓")}'
+    return f'{_format_dir(ahead, "↑")} {_format_dir(behind, "↓")} '
+
+def format_changes(*vals):
+    return ' '.join(
+            _format_dir(v, '', '', lambda x: {0: '-'}.get(x, x)) for v in vals
+    )
+
+def _trim_name(name, max_len=14):
+    if len(name) < 15:
+        return f'{name:<15}'
+    return name[:max_len - 1] +'…'
 
 targets = [Path(_).parent for _ in
            sorted($(find . -maxdepth @(args.depth + 1) -name .git -type d).split('\n'))
@@ -103,19 +115,29 @@ by_org = defaultdict(list)
 for t in targets:
     by_org[t.parent].append(t)
 
-with Live(table_centered, console=console, screen=False, refresh_per_second=4):
+with Live(tree, console=console, screen=False, refresh_per_second=4):
 
     for org, repos in by_org.items():
+        node = tree
+        for part in str(org).split('/'):
+            try:
+                node, = (n for n in node.children if n.label == part)
+            except ValueError:
+                node = node.add(part)
         for f in repos:
             with with_pushd(f):
                 if args.fetch:
                     !(git remote update).returncode
                 status = parse_status($(git status --branch --porcelain))
-                table.add_row(
-                    str(f.parent),
-                    str(f.name),
+                dirty_count = sum(
+                    status[k]
+                    for k in ['changed', 'deleted', 'conflicts', 'untracked']
+                )
+
+                node.add('\t'.join([
+                    _trim_name(f.name),
                     format_branch(status['branch']),
                     format_aheadbehind(status['ahead'], status['behind']),
-                    '' if sum(status[k] for k in ['changed', 'deleted', 'conflicts']) == 0 else '+'
-                )
-        table.rows[-1].end_section = True
+                    format_changes(status['changed'], status['deleted'], status['conflicts'], status['untracked'])
+                    ])
+            )
