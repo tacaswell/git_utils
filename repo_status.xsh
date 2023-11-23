@@ -16,16 +16,6 @@ from xonsh.dirstack import with_pushd
 
 OK_BRANCHES = {'main', 'master', 'develop'}
 
-parser = argparse.ArgumentParser(description='Status of a tree of repos.')
-parser.add_argument(
-    "--fetch",
-    help="fetch all remotes",
-    default=False,
-    action=argparse.BooleanOptionalAction
-)
-parser.add_argument("--depth", help="depth", type=int, default=1)
-args = parser.parse_args()
-
 
 # vendored from xonsh.gitstatus
 def parse_status(status):
@@ -106,38 +96,68 @@ def _trim_name(name, max_len=14):
         return f'{name:<15}'
     return name[:max_len - 1] +'…'
 
-targets = [Path(_).parent for _ in
-           sorted($(find . -maxdepth @(args.depth + 1) -name .git -type d).split('\n'))
-           if len(_)
-           ]
+if __name__ == '__main__':
 
-by_org = defaultdict(list)
-for t in targets:
-    by_org[t.parent].append(t)
+    parser = argparse.ArgumentParser(description='Status of a tree of repos.')
+    parser.add_argument(
+        "--fetch",
+        help="fetch all remotes",
+        default=False,
+        action=argparse.BooleanOptionalAction
+    )
+    parser.add_argument(
+        "--skip-all-green",
+        help="Maybe skip if no modified files.",
+        default=False,
+        action=argparse.BooleanOptionalAction
+    )
+    parser.add_argument("--depth", help="depth", type=int, default=1)
+    args = parser.parse_args()
 
-with Live(tree, console=console, screen=False, refresh_per_second=4):
+    targets = [Path(_).parent for _ in
+               sorted($(find . -maxdepth @(args.depth + 1) -name .git -type d).split('\n'))
+               if len(_)
+               ]
 
-    for org, repos in by_org.items():
-        node = tree
-        for part in str(org).split('/'):
-            try:
-                node, = (n for n in node.children if n.label == part)
-            except ValueError:
-                node = node.add(part)
-        for f in repos:
-            with with_pushd(f):
-                if args.fetch:
-                    !(git remote update).returncode
-                status = parse_status($(git status --branch --porcelain))
-                dirty_count = sum(
-                    status[k]
-                    for k in ['changed', 'deleted', 'conflicts', 'untracked']
+    by_org = defaultdict(list)
+    for t in targets:
+        by_org[t.parent].append(t)
+
+    with Live(tree, console=console, screen=False, refresh_per_second=4):
+        for org, repos in by_org.items():
+            node = tree
+            for part in str(org).split('/'):
+                try:
+                    node, = (n for n in node.children if n.label == part)
+                except ValueError:
+                    node = node.add(part)
+            for f in repos:
+                with with_pushd(f):
+                    if args.fetch:
+                        !(git remote update).returncode
+                    status = parse_status($(git status --branch --porcelain))
+                    dirty_count = sum(
+                        status[k]
+                        for k in ['changed', 'deleted', 'conflicts', 'untracked']
+                    )
+                    if (args.skip_all_green and
+                        dirty_count == 0 and
+                        status['branch'] in OK_BRANCHES and
+                        status['ahead'] + status['behind'] == 0
+                    ):
+                        continue
+
+                    node.add('\t'.join(
+                        [
+                            _trim_name(f.name),
+                            format_branch(status['branch']),
+                            format_aheadbehind(status['ahead'], status['behind']),
+                            format_changes(
+                                status['changed'],
+                                status['deleted'],
+                                status['conflicts'],
+                                status['untracked']
+                            )
+                        ]
+                    )
                 )
-
-                node.add('\t'.join([
-                    _trim_name(f.name),
-                    format_branch(status['branch']),
-                    format_aheadbehind(status['ahead'], status['behind']),
-                    format_changes(status['changed'], status['deleted'], status['conflicts'], status['untracked'])
-                    ])
-            )
